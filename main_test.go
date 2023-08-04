@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
@@ -183,5 +185,48 @@ func TestDownload(t *testing.T) {
 
 	if fileContent != string(got) {
 		t.Errorf("wrong file content")
+	}
+}
+
+func TestDecompress(t *testing.T) {
+	var err error
+	dst := t.TempDir()
+
+	tempFile, err := os.CreateTemp("", "temp.tar.gz")
+	if err != nil {
+		t.Fatalf("Failed to create temporary file: %v", err)
+	}
+
+	gzw := gzip.NewWriter(tempFile)
+	tw := tar.NewWriter(gzw)
+
+	header := &tar.Header{
+		Name: "testFile",
+		Size: int64(len("Test File Content")),
+		Mode: 0600,
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		t.Fatalf("Unexpected error writing header")
+	}
+	if _, err := tw.Write([]byte("Test File Content")); err != nil {
+		t.Fatalf("Unexpected error writing file content")
+	}
+
+	tw.Close()
+	gzw.Close()
+
+	_, err = tempFile.Seek(0, io.SeekStart)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	err = Decompress(dst, tempFile)
+	if err != nil && err != io.EOF {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = os.Stat(dst + "/testFile")
+	if err != nil {
+		t.Fatalf("could not decompress")
 	}
 }

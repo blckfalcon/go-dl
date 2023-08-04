@@ -1,12 +1,15 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -121,6 +124,51 @@ func (a ByRelease) Less(i, j int) bool {
 	return semver.Compare(ai, aj) > 0
 }
 
+func Decompress(dst string, r io.Reader) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+
+	gzr, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+
+	for {
+		header, err := tr.Next()
+
+		switch {
+		case err == io.EOF:
+			return nil
+		case err != nil:
+			return err
+		}
+
+		target := filepath.Join(dst, header.Name)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if _, err := os.Stat(target); err != nil {
+				if err := os.MkdirAll(target, 0755); err != nil {
+					return err
+				}
+			}
+		case tar.TypeReg:
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				return err
+			}
+			f.Close()
+		}
+	}
+}
+
 // TUI
 
 var (
@@ -160,6 +208,7 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 }
 
 type model struct {
+	err      error
 	list     list.Model
 	choice   string
 	quitting bool
@@ -185,17 +234,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "enter":
+			var err error
+			var dlf File
+
 			i, ok := m.list.SelectedItem().(item)
 			if ok {
 				m.choice = string(i)
 			}
 
-			f, err := os.OpenFile(".tmpDownload", os.O_CREATE|os.O_WRONLY, 0666)
+			f, err := os.CreateTemp("", "go-dl-tmp.tar.gz")
 			if err != nil {
-				fmt.Println("Error running program:", err)
+				m.err = err
+				return m, nil
 			}
+			defer f.Close()
 
-			var dlf File
 			for _, v := range m.versions {
 				if m.choice == v.Version {
 					l := v.Files.Filter(
@@ -211,7 +264,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if dlf == (File{}) {
 				fmt.Println("Did not found a matching file", err)
 			}
-			m.repo.Download(m.ctx, dlf, f)
+
+			err = m.repo.Download(m.ctx, dlf, f)
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+
+			_, err = f.Seek(0, io.SeekStart)
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+
+			err = os.RemoveAll("/usr/local/go")
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+
+			err = Decompress("/usr/local", f)
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+
 			return m, tea.Quit
 		}
 	}
@@ -222,6 +299,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	if m.err != nil {
+		return quitTextStyle.Render(fmt.Sprintf("something went wrong: %v", m.err))
+	}
+
 	if m.choice != "" {
 		return quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice))
 	}
