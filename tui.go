@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -18,10 +21,30 @@ var (
 	selectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("027"))
 	paginationStyle   = list.DefaultStyles().PaginationStyle.PaddingLeft(4)
 	helpStyle         = list.DefaultStyles().HelpStyle.PaddingLeft(4).PaddingBottom(1)
-	quitTextStyle     = lipgloss.NewStyle().Margin(1, 0, 2, 4)
+	quitTextStyle     = lipgloss.NewStyle().Margin(1, 0, 1, 4)
+	progressStyle     = lipgloss.NewStyle().MarginLeft(4)
 )
 
 type item string
+type startDownloadMsg struct{}
+type progressMsg float64
+type errMsg struct{ err error }
+
+func startDownloadCmd() tea.Msg {
+	return startDownloadMsg{}
+}
+
+func errorCmd(err error) tea.Cmd {
+	return func() tea.Msg {
+		return errMsg{err}
+	}
+}
+
+func finalPause() tea.Cmd {
+	return tea.Tick(time.Millisecond*750, func(_ time.Time) tea.Msg {
+		return nil
+	})
+}
 
 func (i item) FilterValue() string { return "" }
 
@@ -50,10 +73,11 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 
 type model struct {
 	err      error
+	ctx      context.Context
 	list     list.Model
 	choice   string
+	progress progress.Model
 	quitting bool
-	ctx      context.Context
 	repo     *GoRepository
 	versions []Release
 }
@@ -75,63 +99,87 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "enter":
-			var err error
-			var dlf File
-
 			i, ok := m.list.SelectedItem().(item)
 			if ok {
 				m.choice = string(i)
 			}
 
-			f, err := os.CreateTemp("", "go-dl-tmp.tar.gz")
-			if err != nil {
-				m.err = err
-				return m, nil
-			}
-			defer f.Close()
+			return m, startDownloadCmd
+		}
 
-			for _, v := range m.versions {
-				if m.choice == v.Version {
-					l := v.Files.Filter(
-						func(f File) bool { return f.Os == "linux" },
-						func(f File) bool { return f.Arch == "amd64" },
-					)
-					if len(l) > 0 {
-						dlf = l[0]
-					}
+	case errMsg:
+		m.err = msg.err
+		return m, tea.Quit
+
+	case startDownloadMsg:
+		var err error
+		var dlf File
+
+		f, err := os.CreateTemp("", "go-dl-tmp.tar.gz")
+		if err != nil {
+			return m, errorCmd(err)
+		}
+
+		for _, v := range m.versions {
+			if m.choice == v.Version {
+				l := v.Files.Filter(
+					func(f File) bool { return f.Os == "linux" },
+					func(f File) bool { return f.Arch == "amd64" },
+				)
+				if len(l) > 0 {
+					dlf = l[0]
 				}
 			}
+		}
 
-			if dlf == (File{}) {
-				fmt.Println("Did not found a matching file", err)
-			}
+		if dlf == (File{}) {
+			return m, errorCmd(errors.New("did not found a matching file"))
+		}
 
+		go func() {
 			err = m.repo.Download(m.ctx, dlf, f)
+			defer f.Close()
 			if err != nil {
-				m.err = err
-				return m, nil
+				app.Send(errMsg{err})
+				return
 			}
 
 			_, err = f.Seek(0, io.SeekStart)
 			if err != nil {
-				m.err = err
-				return m, nil
+				app.Send(errMsg{err})
+				return
 			}
 
 			err = os.RemoveAll("/usr/local/go")
 			if err != nil {
-				m.err = err
-				return m, nil
+				app.Send(errMsg{err})
+				return
 			}
 
 			err = Decompress("/usr/local", f)
 			if err != nil {
-				m.err = err
-				return m, nil
+				app.Send(errMsg{err})
+				return
 			}
+		}()
 
-			return m, tea.Quit
+		return m, nil
+
+	case progressMsg:
+		var cmds []tea.Cmd
+
+		if msg >= 1.0 {
+			cmds = append(cmds, tea.Sequence(finalPause()))
 		}
+
+		cmds = append(cmds, m.progress.SetPercent(float64(msg)))
+		return m, tea.Batch(cmds...)
+
+	case progress.FrameMsg:
+		progressModel, cmd := m.progress.Update(msg)
+		m.progress = progressModel.(progress.Model)
+		return m, cmd
+
 	}
 
 	var cmd tea.Cmd
@@ -145,7 +193,8 @@ func (m model) View() string {
 	}
 
 	if m.choice != "" {
-		return quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice))
+		return quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice)) + "\n\n" +
+			progressStyle.Render() + m.progress.View() + "\n\n"
 	}
 
 	if m.quitting {

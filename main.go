@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,13 +15,15 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/mod/semver"
 )
 
 type GoRepository struct {
-	url    string
-	client *http.Client
+	url        string
+	client     *http.Client
+	onProgress func(float64)
 }
 
 func (g *GoRepository) GetVersions(ctx context.Context) ([]Release, error) {
@@ -61,11 +64,21 @@ func (g *GoRepository) Download(ctx context.Context, dlFile File, outFile *os.Fi
 	}
 	defer resp.Body.Close()
 
+	downloaded := 0
+	total := int(resp.ContentLength)
+	if total == 0 {
+		return errors.New("unable to calculate progress: ContentLength is 0")
+	}
 	buf := make([]byte, 32*1024)
+
 	for {
 		nr, errRead := resp.Body.Read(buf)
 		if nr > 0 {
-			_, errWrite := outFile.Write(buf[0:nr])
+			nw, errWrite := outFile.Write(buf[0:nr])
+
+			downloaded += nw
+			g.onProgress(float64(downloaded) / float64(total))
+
 			if errWrite != nil {
 				return errWrite
 			}
@@ -168,11 +181,19 @@ func Decompress(dst string, r io.Reader) error {
 	}
 }
 
+var app *tea.Program
+
 func main() {
 	var err error
 	ctx := context.Background()
 	client := &http.Client{Timeout: time.Duration(30) * time.Second}
-	repo := &GoRepository{client: client, url: "https://go.dev/dl"}
+	repo := &GoRepository{
+		client: client,
+		url:    "https://go.dev/dl",
+		onProgress: func(ratio float64) {
+			app.Send(progressMsg(ratio))
+		},
+	}
 
 	versions, err := repo.GetVersions(ctx)
 	if err != nil {
@@ -195,9 +216,13 @@ func main() {
 	l.Styles.PaginationStyle = paginationStyle
 	l.Styles.HelpStyle = helpStyle
 
-	m := model{list: l, ctx: ctx, repo: repo, versions: versions}
+	p := progress.New(progress.WithGradient("#000000", "#FFFFFF"))
 
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+	m := model{ctx: ctx, list: l, progress: p, repo: repo, versions: versions}
+
+	app = tea.NewProgram(m)
+
+	if _, err := app.Run(); err != nil {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)
 	}

@@ -152,16 +152,17 @@ func TestDownload(t *testing.T) {
 
 	client := NewTestClient(func(*http.Request) *http.Response {
 		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(fileContent)),
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"application/json"}},
+			Body:          io.NopCloser(strings.NewReader(fileContent)),
+			ContentLength: int64(len(fileContent)),
 		}
 	})
 
-	repo := &GoRepository{client: client}
+	repo := &GoRepository{client: client, onProgress: func(ratio float64) {}}
 	file := File{}
 
-	f, err := os.OpenFile(".tmpDownload", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0666)
+	f, err := os.CreateTemp(t.TempDir(), "go-dl-tmpDownload")
 	if err != nil {
 		t.Fatal("Was not possible to create a file")
 	}
@@ -171,11 +172,10 @@ func TestDownload(t *testing.T) {
 		t.Fatal("Unexpected download failure")
 	}
 
-	dl, err := os.Open(".tmpDownload")
+	dl, err := os.Open(f.Name())
 	if errors.Is(err, os.ErrNotExist) {
 		t.Fatal("Expected to have the file created")
 	}
-	defer os.Remove(".tmpDownload")
 
 	got, err := io.ReadAll(dl)
 	if err != nil {
@@ -184,7 +184,33 @@ func TestDownload(t *testing.T) {
 	defer dl.Close()
 
 	if fileContent != string(got) {
-		t.Errorf("wrong file content")
+		t.Errorf("Expected file content '%s', got '%s'", fileContent, string(got))
+	}
+}
+
+func TestDownloadErrContentLength(t *testing.T) {
+	var err error
+
+	client := NewTestClient(func(*http.Request) *http.Response {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"application/json"}},
+			Body:          io.NopCloser(strings.NewReader("")),
+			ContentLength: int64(0),
+		}
+	})
+
+	repo := &GoRepository{client: client, onProgress: func(ratio float64) {}}
+	file := File{}
+
+	f, err := os.CreateTemp(t.TempDir(), "go-dl-tmpDownload")
+	if err != nil {
+		t.Fatal("Was not possible to create a file")
+	}
+
+	err = repo.Download(context.Background(), file, f)
+	if err.Error() != "unable to calculate progress: ContentLength is 0" {
+		t.Errorf("repo.Download() error = %v, want error message 'unable to calculate progress: ContentLength is 0'", err)
 	}
 }
 
