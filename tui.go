@@ -27,6 +27,7 @@ var (
 
 type item string
 type startDownloadMsg struct{}
+type doneMsg struct{}
 type progressMsg float64
 type errMsg struct{ err error }
 
@@ -161,9 +162,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				app.Send(errMsg{err})
 				return
 			}
+			app.Send(doneMsg{})
 		}()
 
 		return m, nil
+
+	case doneMsg:
+		m.quitting = true
+		return m, tea.Sequence(finalPause(), tea.Quit)
 
 	case progressMsg:
 		var cmds []tea.Cmd
@@ -192,13 +198,18 @@ func (m model) View() string {
 		return quitTextStyle.Render(fmt.Sprintf("something went wrong: %v", m.err))
 	}
 
-	if m.choice != "" {
-		return quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice)) + "\n\n" +
+	if m.quitting && m.choice != "" {
+		return quitTextStyle.Render(fmt.Sprintf("Completed download and extraction of %s !", m.choice)) + "\n\n" +
 			progressStyle.Render() + m.progress.View() + "\n\n"
 	}
 
 	if m.quitting {
-		return quitTextStyle.Render("Finishing..")
+		return quitTextStyle.Render("exiting..")
+	}
+
+	if m.choice != "" {
+		return quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice)) + "\n\n" +
+			progressStyle.Render() + m.progress.View() + "\n\n"
 	}
 
 	return "\n" + m.list.View()
