@@ -7,17 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/version"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
-	"golang.org/x/mod/semver"
 )
 
 type GoRepository struct {
@@ -131,9 +130,7 @@ type ByRelease []Release
 func (a ByRelease) Len() int      { return len(a) }
 func (a ByRelease) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a ByRelease) Less(i, j int) bool {
-	ai := strings.ReplaceAll(a[i].Version, "go", "v")
-	aj := strings.ReplaceAll(a[j].Version, "go", "v")
-	return semver.Compare(ai, aj) > 0
+	return version.Compare(a[i].Version, a[j].Version) > 0
 }
 
 func Decompress(dst string, r io.Reader) error {

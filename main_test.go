@@ -112,7 +112,7 @@ func TestReleaseSort(t *testing.T) {
 	sort.Sort(ByRelease(got))
 
 	if !reflect.DeepEqual(want, got) {
-		t.Errorf("Order should count")
+		t.Errorf("invalid sorting order want: %v, got: %v", want, got)
 	}
 }
 
