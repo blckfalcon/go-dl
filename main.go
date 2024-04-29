@@ -178,8 +178,6 @@ func Decompress(dst string, r io.Reader) error {
 	}
 }
 
-var app *tea.Program
-
 func main() {
 	var err error
 	ctx := context.Background()
@@ -187,9 +185,6 @@ func main() {
 	repo := &GoRepository{
 		client: client,
 		url:    "https://go.dev/dl",
-		onProgress: func(ratio float64) {
-			app.Send(progressMsg(ratio))
-		},
 	}
 
 	versions, err := repo.GetVersions(ctx)
@@ -217,7 +212,11 @@ func main() {
 
 	m := model{ctx: ctx, list: l, progress: p, repo: repo, versions: versions}
 
-	app = tea.NewProgram(m)
+	app := tea.NewProgram(m)
+
+	repo.onProgress = func(ratio float64) {
+		app.Send(progressMsg(ratio))
+	}
 
 	if _, err := app.Run(); err != nil {
 		fmt.Println("Error running program:", err)

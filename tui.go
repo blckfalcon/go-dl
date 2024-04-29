@@ -26,18 +26,65 @@ var (
 )
 
 type item string
-type startDownloadMsg struct{}
 type doneMsg struct{}
 type progressMsg float64
 type errMsg struct{ err error }
 
-func startDownloadCmd() tea.Msg {
-	return startDownloadMsg{}
+func downloadCmd(m *model) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		var dlf File
+
+		for _, v := range m.versions {
+			if m.choice == v.Version {
+				l := v.Files.Filter(
+					func(f File) bool { return f.Os == "linux" },
+					func(f File) bool { return f.Arch == "amd64" },
+				)
+				if len(l) > 0 {
+					dlf = l[0]
+				}
+			}
+		}
+
+		if dlf == (File{}) {
+			return errMsg{errors.New("did not found a matching file")}
+		}
+
+		m.file, err = os.CreateTemp("", "go-dl-tmp.tar.gz")
+		if err != nil {
+			return errMsg{err}
+		}
+
+		err = m.repo.Download(m.ctx, dlf, m.file)
+		if err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
 }
 
-func errorCmd(err error) tea.Cmd {
+func extractCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
-		return errMsg{err}
+		var err error
+
+		defer m.file.Close()
+
+		_, err = m.file.Seek(0, io.SeekStart)
+		if err != nil {
+			return errMsg{err}
+		}
+
+		err = os.RemoveAll("/usr/local/go")
+		if err != nil {
+			return errMsg{err}
+		}
+
+		err = Decompress("/usr/local", m.file)
+		if err != nil {
+			return errMsg{err}
+		}
+		return doneMsg{}
 	}
 }
 
@@ -81,6 +128,7 @@ type model struct {
 	quitting bool
 	repo     *GoRepository
 	versions []Release
+	file     *os.File
 }
 
 func (m model) Init() tea.Cmd {
@@ -105,67 +153,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.choice = string(i)
 			}
 
-			return m, startDownloadCmd
+			return m, tea.Sequence(downloadCmd(&m), extractCmd(&m))
 		}
 
 	case errMsg:
 		m.err = msg.err
 		return m, tea.Quit
-
-	case startDownloadMsg:
-		var err error
-		var dlf File
-
-		f, err := os.CreateTemp("", "go-dl-tmp.tar.gz")
-		if err != nil {
-			return m, errorCmd(err)
-		}
-
-		for _, v := range m.versions {
-			if m.choice == v.Version {
-				l := v.Files.Filter(
-					func(f File) bool { return f.Os == "linux" },
-					func(f File) bool { return f.Arch == "amd64" },
-				)
-				if len(l) > 0 {
-					dlf = l[0]
-				}
-			}
-		}
-
-		if dlf == (File{}) {
-			return m, errorCmd(errors.New("did not found a matching file"))
-		}
-
-		go func() {
-			err = m.repo.Download(m.ctx, dlf, f)
-			defer f.Close()
-			if err != nil {
-				app.Send(errMsg{err})
-				return
-			}
-
-			_, err = f.Seek(0, io.SeekStart)
-			if err != nil {
-				app.Send(errMsg{err})
-				return
-			}
-
-			err = os.RemoveAll("/usr/local/go")
-			if err != nil {
-				app.Send(errMsg{err})
-				return
-			}
-
-			err = Decompress("/usr/local", f)
-			if err != nil {
-				app.Send(errMsg{err})
-				return
-			}
-			app.Send(doneMsg{})
-		}()
-
-		return m, nil
 
 	case doneMsg:
 		m.quitting = true
