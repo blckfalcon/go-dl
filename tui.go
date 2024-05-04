@@ -25,6 +25,16 @@ var (
 	progressStyle     = lipgloss.NewStyle().MarginLeft(4)
 )
 
+type State int
+
+const (
+	Choosing State = iota
+	Downloading
+	Extracting
+	Quitting
+	Completed
+)
+
 type item string
 type doneMsg struct{}
 type progressMsg float64
@@ -67,6 +77,7 @@ func downloadCmd(m *model) tea.Cmd {
 func extractCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
 		var err error
+		m.status = Extracting
 
 		defer m.file.Close()
 
@@ -125,10 +136,10 @@ type model struct {
 	list     list.Model
 	choice   string
 	progress progress.Model
-	quitting bool
 	repo     *GoRepository
 	versions []Release
 	file     *os.File
+	status   State
 }
 
 func (m model) Init() tea.Cmd {
@@ -144,7 +155,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch keypress := msg.String(); keypress {
 		case "ctrl+c":
-			m.quitting = true
+			m.status = Quitting
 			return m, tea.Quit
 
 		case "enter":
@@ -153,6 +164,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.choice = string(i)
 			}
 
+			m.status = Downloading
 			return m, tea.Sequence(downloadCmd(&m), extractCmd(&m))
 		}
 
@@ -161,7 +173,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case doneMsg:
-		m.quitting = true
+		m.status = Completed
 		return m, tea.Sequence(finalPause(), tea.Quit)
 
 	case progressMsg:
@@ -191,18 +203,26 @@ func (m model) View() string {
 		return quitTextStyle.Render(fmt.Sprintf("something went wrong: %v", m.err))
 	}
 
-	if m.quitting && m.choice != "" {
-		return quitTextStyle.Render(fmt.Sprintf("Completed download and extraction of %s !", m.choice)) + "\n\n" +
-			progressStyle.Render() + m.progress.View() + "\n\n"
+	if m.status == Downloading {
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice)),
+			progressStyle.Render(m.progress.View()),
+			"",
+		)
 	}
 
-	if m.quitting {
+	if m.status == Completed {
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			quitTextStyle.Render(fmt.Sprintf("Completed download and extraction of %s !", m.choice)),
+			progressStyle.Render(m.progress.View()),
+			"",
+		)
+	}
+
+	if m.status == Quitting {
 		return quitTextStyle.Render("exiting..")
-	}
-
-	if m.choice != "" {
-		return quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice)) + "\n\n" +
-			progressStyle.Render() + m.progress.View() + "\n\n"
 	}
 
 	return "\n" + m.list.View()
