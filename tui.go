@@ -38,6 +38,7 @@ const (
 type item string
 type doneMsg struct{}
 type progressMsg float64
+type statusMsg State
 type errMsg struct{ err error }
 
 func downloadCmd(m *model) tea.Cmd {
@@ -77,7 +78,6 @@ func downloadCmd(m *model) tea.Cmd {
 func extractCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
 		var err error
-		m.status = Extracting
 
 		defer m.file.Close()
 
@@ -91,11 +91,17 @@ func extractCmd(m *model) tea.Cmd {
 			return errMsg{err}
 		}
 
-		err = Decompress("/usr/local", m.file)
+		err = Decompress("/usr/local", m.file, m.repo.onProgress)
 		if err != nil {
 			return errMsg{err}
 		}
 		return doneMsg{}
+	}
+}
+
+func statusCmd(s State) tea.Cmd {
+	return func() tea.Msg {
+		return statusMsg(s)
 	}
 }
 
@@ -164,9 +170,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.choice = string(i)
 			}
 
-			m.status = Downloading
-			return m, tea.Sequence(downloadCmd(&m), extractCmd(&m))
+			return m, tea.Sequence(
+				statusCmd(Downloading),
+				downloadCmd(&m),
+				statusCmd(Extracting),
+				extractCmd(&m),
+			)
 		}
+
+	case statusMsg:
+		m.status = State(msg)
+		return m, nil
 
 	case errMsg:
 		m.err = msg.err
@@ -207,6 +221,15 @@ func (m model) View() string {
 		return lipgloss.JoinVertical(
 			lipgloss.Left,
 			quitTextStyle.Render(fmt.Sprintf("Downloading: %s", m.choice)),
+			progressStyle.Render(m.progress.View()),
+			"",
+		)
+	}
+
+	if m.status == Extracting {
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			quitTextStyle.Render(fmt.Sprintf("Extracting: %s", m.choice)),
 			progressStyle.Render(m.progress.View()),
 			"",
 		)

@@ -246,7 +246,7 @@ func TestDecompress(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	err = Decompress(dst, tempFile)
+	err = Decompress(dst, tempFile, func(ratio float64) {})
 	if err != nil && err != io.EOF {
 		t.Fatalf("Unexpected error: %v", err)
 	}

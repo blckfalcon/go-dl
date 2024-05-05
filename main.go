@@ -133,7 +133,7 @@ func (a ByRelease) Less(i, j int) bool {
 	return version.Compare(a[i].Version, a[j].Version) > 0
 }
 
-func Decompress(dst string, r io.Reader) error {
+func Decompress(dst string, r io.ReadSeeker, onProgress func(float64)) error {
 	if err := os.MkdirAll(dst, 0755); err != nil {
 		return err
 	}
@@ -146,6 +146,29 @@ func Decompress(dst string, r io.Reader) error {
 
 	tr := tar.NewReader(gzr)
 
+	totalFiles := 0
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if header.Typeflag == tar.TypeReg {
+			totalFiles++
+		}
+	}
+
+	_, err = r.Seek(0, io.SeekStart)
+	if err != nil {
+		return err
+	}
+
+	err = gzr.Reset(r)
+	if err != nil {
+		return err
+	}
+	tr = tar.NewReader(gzr)
+
+	countFiles := 0
 	for {
 		header, err := tr.Next()
 
@@ -173,8 +196,11 @@ func Decompress(dst string, r io.Reader) error {
 			if _, err := io.Copy(f, tr); err != nil {
 				return err
 			}
+			countFiles++
 			f.Close()
 		}
+
+		onProgress(float64(countFiles) / float64(totalFiles))
 	}
 }
 
